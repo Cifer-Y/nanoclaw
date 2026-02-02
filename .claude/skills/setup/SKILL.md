@@ -1,11 +1,11 @@
 ---
 name: setup
-description: Run initial NanoClaw setup. Use when user wants to install dependencies, authenticate WhatsApp, register their main channel, or start the background services. Triggers on "setup", "install", "configure nanoclaw", or first-time setup requests.
+description: Run initial NanoClaw setup. Use when user wants to install dependencies, authenticate Telegram, register their main channel, or start the background services. Triggers on "setup", "install", "configure nanoclaw", or first-time setup requests.
 ---
 
 # NanoClaw Setup
 
-Run all commands automatically. Only pause when user action is required (scanning QR codes).
+Run all commands automatically. Only pause when user action is required (entering phone number/code).
 
 ## 1. Install Dependencies
 
@@ -101,21 +101,31 @@ Verify the build succeeded (the `container images` command may not work due to a
 echo '{}' | container run -i --entrypoint /bin/echo nanoclaw-agent:latest "Container OK" || echo "Container build failed"
 ```
 
-## 5. WhatsApp Authentication
+## 5. Telegram Authentication
 
 **USER ACTION REQUIRED**
 
-Run the authentication script:
+First, the user needs API credentials from Telegram:
+
+Tell the user:
+> You need a Telegram API ID and API Hash.
+> 1. Go to https://my.telegram.org/apps
+> 2. Log in with your phone number
+> 3. Create an application (any name/description is fine)
+> 4. Copy the **api_id** and **api_hash**
+
+Once they have the credentials, run the authentication script:
 
 ```bash
 npm run auth
 ```
 
-Tell the user:
-> A QR code will appear. On your phone:
-> 1. Open WhatsApp
-> 2. Tap **Settings → Linked Devices → Link a Device**
-> 3. Scan the QR code
+The script will:
+1. Prompt for api_id and api_hash (saved for future use)
+2. Prompt for phone number (with country code, e.g., +1234567890)
+3. Send a verification code to their Telegram app
+4. Prompt for the verification code
+5. Prompt for 2FA password if enabled
 
 Wait for the script to output "Successfully authenticated" then continue.
 
@@ -138,13 +148,13 @@ Store their choice - you'll use it when creating the registered_groups.json and 
 ## 7. Register Main Channel
 
 Ask the user:
-> Do you want to use your **personal chat** (message yourself) or a **WhatsApp group** as your main control channel?
+> Do you want to use a **Telegram group** or a **private chat** as your main control channel?
 
-For personal chat:
-> Send any message to yourself in WhatsApp (the "Message Yourself" chat). Tell me when done.
+For private chat:
+> Send any message to yourself in Telegram (Saved Messages). Tell me when done.
 
 For group:
-> Send any message in the WhatsApp group you want to use as your main channel. Tell me when done.
+> Send any message in the Telegram group you want to use as your main channel. Tell me when done.
 
 After user confirms, start the app briefly to capture the message:
 
@@ -152,20 +162,20 @@ After user confirms, start the app briefly to capture the message:
 timeout 10 npm run dev || true
 ```
 
-Then find the JID from the database:
+Then find the chat ID from the database:
 
 ```bash
-# For personal chat (ends with @s.whatsapp.net)
-sqlite3 store/messages.db "SELECT DISTINCT chat_jid FROM messages WHERE chat_jid LIKE '%@s.whatsapp.net' ORDER BY timestamp DESC LIMIT 5"
+# For groups (negative IDs)
+sqlite3 store/messages.db "SELECT DISTINCT chat_jid FROM messages WHERE CAST(chat_jid AS INTEGER) < 0 ORDER BY timestamp DESC LIMIT 5"
 
-# For group (ends with @g.us)
-sqlite3 store/messages.db "SELECT DISTINCT chat_jid FROM messages WHERE chat_jid LIKE '%@g.us' ORDER BY timestamp DESC LIMIT 5"
+# For private chats (positive IDs)
+sqlite3 store/messages.db "SELECT DISTINCT chat_jid FROM messages WHERE CAST(chat_jid AS INTEGER) > 0 ORDER BY timestamp DESC LIMIT 5"
 ```
 
-Create/update `data/registered_groups.json` using the JID from above and the assistant name from step 5:
+Create/update `data/registered_groups.json` using the chat ID from above and the assistant name from step 5:
 ```json
 {
-  "JID_HERE": {
+  "CHAT_ID_HERE": {
     "name": "main",
     "folder": "main",
     "trigger": "@ASSISTANT_NAME",
@@ -356,7 +366,7 @@ Check the logs:
 tail -f logs/nanoclaw.log
 ```
 
-The user should receive a response in WhatsApp.
+The user should receive a response in Telegram.
 
 ## Troubleshooting
 
@@ -368,10 +378,10 @@ The user should receive a response in WhatsApp.
 
 **No response to messages**:
 - Verify the trigger pattern matches (e.g., `@AssistantName` at start of message)
-- Check that the chat JID is in `data/registered_groups.json`
+- Check that the chat ID is in `data/registered_groups.json`
 - Check `logs/nanoclaw.log` for errors
 
-**WhatsApp disconnected**:
+**Telegram session expired**:
 - The service will show a macOS notification
 - Run `npm run auth` to re-authenticate
 - Restart the service: `launchctl kickstart -k gui/$(id -u)/com.nanoclaw`

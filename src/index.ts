@@ -1,9 +1,6 @@
-import makeWASocket, {
-  useMultiFileAuthState,
-  DisconnectReason,
-  makeCacheableSignalKeyStore,
-  WASocket
-} from '@whiskeysockets/baileys';
+import { TelegramClient, Api } from 'telegram';
+import { StringSession } from 'telegram/sessions/index.js';
+import { NewMessage as TelegramNewMessage } from 'telegram/events/index.js';
 import pino from 'pino';
 import { exec, execSync } from 'child_process';
 import fs from 'fs';
@@ -32,17 +29,25 @@ const logger = pino({
   transport: { target: 'pino-pretty', options: { colorize: true } }
 });
 
-let sock: WASocket;
+let client: TelegramClient;
 let lastTimestamp = '';
 let sessions: Session = {};
 let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
 
-async function setTyping(jid: string, isTyping: boolean): Promise<void> {
+async function setTyping(chatId: string, isTyping: boolean): Promise<void> {
   try {
-    await sock.sendPresenceUpdate(isTyping ? 'composing' : 'paused', jid);
+    const peer = await client.getInputEntity(chatId);
+    await client.invoke(
+      new Api.messages.SetTyping({
+        peer,
+        action: isTyping
+          ? new Api.SendMessageTypingAction()
+          : new Api.SendMessageCancelAction()
+      })
+    );
   } catch (err) {
-    logger.debug({ jid, err }, 'Failed to update typing status');
+    logger.debug({ chatId, err }, 'Failed to update typing status');
   }
 }
 
@@ -73,8 +78,8 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
 }
 
 /**
- * Sync group metadata from WhatsApp.
- * Fetches all participating groups and stores their names in the database.
+ * Sync group metadata from Telegram.
+ * Fetches all dialogs and stores group/channel names in the database.
  * Called on startup, daily, and on-demand via IPC.
  */
 async function syncGroupMetadata(force = false): Promise<void> {
@@ -92,14 +97,20 @@ async function syncGroupMetadata(force = false): Promise<void> {
   }
 
   try {
-    logger.info('Syncing group metadata from WhatsApp...');
-    const groups = await sock.groupFetchAllParticipating();
+    logger.info('Syncing group metadata from Telegram...');
+    const dialogs = await client.getDialogs({});
 
     let count = 0;
-    for (const [jid, metadata] of Object.entries(groups)) {
-      if (metadata.subject) {
-        updateChatName(jid, metadata.subject);
-        count++;
+    for (const dialog of dialogs) {
+      if (dialog.isGroup || dialog.isChannel) {
+        const chatId = dialog.id?.toString();
+        const name = dialog.title;
+        if (chatId && name) {
+          // Telegram groups have negative IDs; ensure consistent format
+          const normalizedId = chatId.startsWith('-') ? chatId : `-${chatId}`;
+          updateChatName(normalizedId, name);
+          count++;
+        }
       }
     }
 
@@ -119,7 +130,7 @@ function getAvailableGroups(): AvailableGroup[] {
   const registeredJids = new Set(Object.keys(registeredGroups));
 
   return chats
-    .filter(c => c.jid !== '__group_sync__' && c.jid.endsWith('@g.us'))
+    .filter(c => c.jid !== '__group_sync__' && c.jid.startsWith('-'))
     .map(c => ({
       jid: c.jid,
       name: c.name,
@@ -213,12 +224,12 @@ async function runAgent(group: RegisteredGroup, prompt: string, chatJid: string)
   }
 }
 
-async function sendMessage(jid: string, text: string): Promise<void> {
+async function sendMessage(chatId: string, text: string): Promise<void> {
   try {
-    await sock.sendMessage(jid, { text });
-    logger.info({ jid, length: text.length }, 'Message sent');
+    await client.sendMessage(chatId, { message: text });
+    logger.info({ chatId, length: text.length }, 'Message sent');
   } catch (err) {
-    logger.error({ jid, err }, 'Failed to send message');
+    logger.error({ chatId, err }, 'Failed to send message');
   }
 }
 
@@ -472,78 +483,92 @@ async function processTaskIpc(
   }
 }
 
-async function connectWhatsApp(): Promise<void> {
+async function connectTelegram(): Promise<void> {
   const authDir = path.join(STORE_DIR, 'auth');
-  fs.mkdirSync(authDir, { recursive: true });
+  const credentialsPath = path.join(authDir, 'telegram-credentials.json');
+  const sessionPath = path.join(authDir, 'session.txt');
 
-  const { state, saveCreds } = await useMultiFileAuthState(authDir);
+  // Load credentials
+  if (!fs.existsSync(credentialsPath) || !fs.existsSync(sessionPath)) {
+    const msg = 'Telegram authentication required. Run: npm run auth';
+    logger.error(msg);
+    exec(`osascript -e 'display notification "${msg}" with title "NanoClaw" sound name "Basso"'`);
+    process.exit(1);
+  }
 
-  sock = makeWASocket({
-    auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) },
-    printQRInTerminal: false,
-    logger,
-    browser: ['NanoClaw', 'Chrome', '1.0.0']
+  const credentials = JSON.parse(fs.readFileSync(credentialsPath, 'utf-8'));
+  const sessionString = fs.readFileSync(sessionPath, 'utf-8').trim();
+  const session = new StringSession(sessionString);
+
+  client = new TelegramClient(session, credentials.apiId, credentials.apiHash, {
+    connectionRetries: 5,
   });
 
-  sock.ev.on('connection.update', (update) => {
-    const { connection, lastDisconnect, qr } = update;
+  await client.connect();
 
-    if (qr) {
-      const msg = 'WhatsApp authentication required. Run /setup in Claude Code.';
-      logger.error(msg);
-      exec(`osascript -e 'display notification "${msg}" with title "NanoClaw" sound name "Basso"'`);
-      setTimeout(() => process.exit(1), 1000);
-    }
+  if (!(await client.isUserAuthorized())) {
+    const msg = 'Telegram session expired. Run: npm run auth';
+    logger.error(msg);
+    exec(`osascript -e 'display notification "${msg}" with title "NanoClaw" sound name "Basso"'`);
+    process.exit(1);
+  }
 
-    if (connection === 'close') {
-      const reason = (lastDisconnect?.error as any)?.output?.statusCode;
-      const shouldReconnect = reason !== DisconnectReason.loggedOut;
-      logger.info({ reason, shouldReconnect }, 'Connection closed');
+  logger.info('Connected to Telegram');
 
-      if (shouldReconnect) {
-        logger.info('Reconnecting...');
-        connectWhatsApp();
-      } else {
-        logger.info('Logged out. Run /setup to re-authenticate.');
-        process.exit(0);
+  // Sync group metadata on startup (respects 24h cache)
+  syncGroupMetadata().catch(err => logger.error({ err }, 'Initial group sync failed'));
+  // Set up daily sync timer
+  setInterval(() => {
+    syncGroupMetadata().catch(err => logger.error({ err }, 'Periodic group sync failed'));
+  }, GROUP_SYNC_INTERVAL_MS);
+
+  startSchedulerLoop({
+    sendMessage,
+    registeredGroups: () => registeredGroups,
+    getSessions: () => sessions
+  });
+  startIpcWatcher();
+
+  // Handle incoming messages
+  client.addEventHandler(async (event) => {
+    const message = event.message;
+    if (!message || !message.chatId) return;
+
+    const chatId = message.chatId.toString();
+    // Normalize: Telegram groups have negative IDs
+    const normalizedChatId = chatId.startsWith('-') ? chatId : (message.isGroup || message.isChannel ? `-${chatId}` : chatId);
+    const timestamp = new Date(message.date * 1000).toISOString();
+    const text = message.text || '';
+    const isFromMe = message.out || false;
+
+    // Always store chat metadata for group discovery
+    storeChatMetadata(normalizedChatId, timestamp);
+
+    // Only store full message content for registered groups
+    if (registeredGroups[normalizedChatId]) {
+      const senderId = message.senderId?.toString() || '';
+      let senderName = senderId;
+
+      // Try to get a friendly sender name
+      try {
+        if (message.senderId) {
+          const entity = await client.getEntity(message.senderId);
+          if ('firstName' in entity) {
+            senderName = [entity.firstName, entity.lastName].filter(Boolean).join(' ');
+          } else if ('title' in entity) {
+            senderName = entity.title || senderId;
+          }
+        }
+      } catch {
+        // Fallback to senderId is fine
       }
-    } else if (connection === 'open') {
-      logger.info('Connected to WhatsApp');
-      // Sync group metadata on startup (respects 24h cache)
-      syncGroupMetadata().catch(err => logger.error({ err }, 'Initial group sync failed'));
-      // Set up daily sync timer
-      setInterval(() => {
-        syncGroupMetadata().catch(err => logger.error({ err }, 'Periodic group sync failed'));
-      }, GROUP_SYNC_INTERVAL_MS);
-      startSchedulerLoop({
-        sendMessage,
-        registeredGroups: () => registeredGroups,
-        getSessions: () => sessions
-      });
-      startIpcWatcher();
-      startMessageLoop();
+
+      const msgId = message.id?.toString() || `${Date.now()}`;
+      storeMessage(msgId, normalizedChatId, senderId, senderName, text, timestamp, isFromMe);
     }
-  });
+  }, new TelegramNewMessage({}));
 
-  sock.ev.on('creds.update', saveCreds);
-
-  sock.ev.on('messages.upsert', ({ messages }) => {
-    for (const msg of messages) {
-      if (!msg.message) continue;
-      const chatJid = msg.key.remoteJid;
-      if (!chatJid || chatJid === 'status@broadcast') continue;
-
-      const timestamp = new Date(Number(msg.messageTimestamp) * 1000).toISOString();
-
-      // Always store chat metadata for group discovery
-      storeChatMetadata(chatJid, timestamp);
-
-      // Only store full message content for registered groups
-      if (registeredGroups[chatJid]) {
-        storeMessage(msg, chatJid, msg.key.fromMe || false, msg.pushName || undefined);
-      }
-    }
-  });
+  startMessageLoop();
 }
 
 async function startMessageLoop(): Promise<void> {
@@ -603,7 +628,7 @@ async function main(): Promise<void> {
   initDatabase();
   logger.info('Database initialized');
   loadState();
-  await connectWhatsApp();
+  await connectTelegram();
 }
 
 main().catch(err => {

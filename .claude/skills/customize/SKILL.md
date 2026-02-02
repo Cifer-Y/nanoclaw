@@ -19,10 +19,10 @@ This skill helps users add capabilities or modify behavior. Use AskUserQuestion 
 | File | Purpose |
 |------|---------|
 | `src/config.ts` | Assistant name, trigger pattern, directories |
-| `src/index.ts` | Message routing, WhatsApp connection, agent invocation |
+| `src/index.ts` | Message routing, Telegram connection, agent invocation |
 | `src/db.ts` | Database initialization and queries |
 | `src/types.ts` | TypeScript interfaces |
-| `src/whatsapp-auth.ts` | Standalone WhatsApp authentication script |
+| `src/telegram-auth.ts` | Standalone Telegram authentication script |
 | `.mcp.json` | MCP server configuration (reference) |
 | `groups/CLAUDE.md` | Global memory/persona |
 
