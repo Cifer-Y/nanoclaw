@@ -3,7 +3,7 @@
  * Spawns agent execution in Apple Container and handles IPC
  */
 
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -26,6 +26,25 @@ const logger = pino({
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
+
+function getKeychainToken(): string | null {
+  if (process.platform !== 'darwin') return null;
+  try {
+    const raw = execSync('security find-generic-password -s "Claude Code-credentials" -w', {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 5000
+    }).toString().trim();
+    const creds = JSON.parse(raw);
+    const token = creds?.claudeAiOauth?.accessToken;
+    if (token) {
+      logger.debug('Refreshed OAuth token from macOS keychain');
+      return token;
+    }
+  } catch {
+    logger.debug('Could not read OAuth token from keychain, falling back to .env');
+  }
+  return null;
+}
 
 function getHomeDir(): string {
   const home = process.env.HOME || os.homedir();
@@ -121,26 +140,39 @@ function buildVolumeMounts(group: RegisteredGroup, isMain: boolean): VolumeMount
   // Only expose specific auth variables needed by Claude Code, not the entire .env
   const envDir = path.join(DATA_DIR, 'env');
   fs.mkdirSync(envDir, { recursive: true });
+
+  // Try to get fresh OAuth token from macOS keychain (auto-refreshed by Claude Code)
+  const keychainToken = getKeychainToken();
+
   const envFile = path.join(projectRoot, '.env');
+  const envLines: string[] = [];
+
+  if (keychainToken) {
+    envLines.push(`CLAUDE_CODE_OAUTH_TOKEN=${keychainToken}`);
+  }
+
+  // Fall back to .env file for any vars not already covered by keychain
   if (fs.existsSync(envFile)) {
-    const envContent = fs.readFileSync(envFile, 'utf-8');
     const allowedVars = ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'];
-    const filteredLines = envContent
+    const coveredVars = new Set(envLines.map(l => l.split('=')[0]));
+    const fileLines = fs.readFileSync(envFile, 'utf-8')
       .split('\n')
       .filter(line => {
         const trimmed = line.trim();
         if (!trimmed || trimmed.startsWith('#')) return false;
-        return allowedVars.some(v => trimmed.startsWith(`${v}=`));
+        const varName = trimmed.split('=')[0];
+        return allowedVars.includes(varName) && !coveredVars.has(varName);
       });
+    envLines.push(...fileLines);
+  }
 
-    if (filteredLines.length > 0) {
-      fs.writeFileSync(path.join(envDir, 'env'), filteredLines.join('\n') + '\n');
-      mounts.push({
-        hostPath: envDir,
-        containerPath: '/workspace/env-dir',
-        readonly: true
-      });
-    }
+  if (envLines.length > 0) {
+    fs.writeFileSync(path.join(envDir, 'env'), envLines.join('\n') + '\n');
+    mounts.push({
+      hostPath: envDir,
+      containerPath: '/workspace/env-dir',
+      readonly: true
+    });
   }
 
   // Additional mounts validated against external allowlist (tamper-proof from containers)
