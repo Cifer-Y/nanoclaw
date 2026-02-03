@@ -46,6 +46,24 @@ function getKeychainToken(): string | null {
   return null;
 }
 
+export function refreshOAuthToken(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn('claude', ['-p', 'hi', '--model', 'haiku'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 30000,
+    });
+    proc.on('close', (code) => {
+      if (code === 0) {
+        logger.info('OAuth token refreshed via claude CLI');
+        resolve();
+      } else {
+        reject(new Error(`claude exited with code ${code}`));
+      }
+    });
+    proc.on('error', reject);
+  });
+}
+
 function getHomeDir(): string {
   const home = process.env.HOME || os.homedir();
   if (!home) {

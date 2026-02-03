@@ -14,12 +14,13 @@ import {
   TRIGGER_PATTERN,
   MAIN_GROUP_FOLDER,
   IPC_POLL_INTERVAL,
-  TIMEZONE
+  TIMEZONE,
+  TOKEN_REFRESH_INTERVAL_MS
 } from './config.js';
 import { RegisteredGroup, Session, NewMessage } from './types.js';
 import { initDatabase, storeMessage, storeChatMetadata, getNewMessages, getMessagesSince, getAllTasks, getTaskById, updateChatName, getAllChats, getLastGroupSync, setLastGroupSync } from './db.js';
 import { startSchedulerLoop } from './task-scheduler.js';
-import { runContainerAgent, writeTasksSnapshot, writeGroupsSnapshot, AvailableGroup } from './container-runner.js';
+import { runContainerAgent, writeTasksSnapshot, writeGroupsSnapshot, AvailableGroup, refreshOAuthToken } from './container-runner.js';
 import { loadJson, saveJson } from './utils.js';
 
 const GROUP_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -525,6 +526,12 @@ async function connectTelegram(): Promise<void> {
   setInterval(() => {
     syncGroupMetadata().catch(err => logger.error({ err }, 'Periodic group sync failed'));
   }, GROUP_SYNC_INTERVAL_MS);
+
+  // Periodic OAuth token refresh - run claude CLI on host to keep keychain token fresh
+  refreshOAuthToken().catch(err => logger.error({ err }, 'Initial OAuth token refresh failed'));
+  setInterval(() => {
+    refreshOAuthToken().catch(err => logger.error({ err }, 'Periodic OAuth token refresh failed'));
+  }, TOKEN_REFRESH_INTERVAL_MS);
 
   startSchedulerLoop({
     sendMessage,
