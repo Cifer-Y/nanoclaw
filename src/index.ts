@@ -203,30 +203,44 @@ async function runAgent(group: RegisteredGroup, prompt: string, chatJid: string)
   const availableGroups = getAvailableGroups();
   writeGroupsSnapshot(group.folder, isMain, availableGroups, new Set(Object.keys(registeredGroups)));
 
-  try {
-    const output = await runContainerAgent(group, {
-      prompt,
-      sessionId,
-      groupFolder: group.folder,
-      chatJid,
-      isMain
-    });
+  const maxAttempts = 2;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const output = await runContainerAgent(group, {
+        prompt,
+        sessionId,
+        groupFolder: group.folder,
+        chatJid,
+        isMain
+      });
 
-    if (output.newSessionId) {
-      sessions[group.folder] = output.newSessionId;
-      saveJson(path.join(DATA_DIR, 'sessions.json'), sessions);
-    }
+      if (output.newSessionId) {
+        sessions[group.folder] = output.newSessionId;
+        saveJson(path.join(DATA_DIR, 'sessions.json'), sessions);
+      }
 
-    if (output.status === 'error') {
-      logger.error({ group: group.name, error: output.error }, 'Container agent error');
+      if (output.status === 'error') {
+        if (attempt < maxAttempts) {
+          logger.warn({ group: group.name, attempt, error: output.error }, 'Container agent error, retrying...');
+          await new Promise(r => setTimeout(r, 5000));
+          continue;
+        }
+        logger.error({ group: group.name, error: output.error }, 'Container agent error');
+        return null;
+      }
+
+      return output.result;
+    } catch (err) {
+      if (attempt < maxAttempts) {
+        logger.warn({ group: group.name, attempt, err }, 'Agent error, retrying...');
+        await new Promise(r => setTimeout(r, 5000));
+        continue;
+      }
+      logger.error({ group: group.name, err }, 'Agent error');
       return null;
     }
-
-    return output.result;
-  } catch (err) {
-    logger.error({ group: group.name, err }, 'Agent error');
-    return null;
   }
+  return null;
 }
 
 async function sendMessage(chatId: string, text: string): Promise<void> {
