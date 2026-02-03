@@ -13,7 +13,8 @@ import {
   CONTAINER_TIMEOUT,
   CONTAINER_MAX_OUTPUT_SIZE,
   GROUPS_DIR,
-  DATA_DIR
+  DATA_DIR,
+  TIMEZONE
 } from './config.js';
 import { RegisteredGroup } from './types.js';
 import { validateAdditionalMounts } from './mount-security.js';
@@ -164,6 +165,8 @@ function buildVolumeMounts(group: RegisteredGroup, isMain: boolean): VolumeMount
 
   const envFile = path.join(projectRoot, '.env');
   const envLines: string[] = [];
+
+  envLines.push(`TZ=${TIMEZONE}`);
 
   if (keychainToken) {
     envLines.push(`CLAUDE_CODE_OAUTH_TOKEN=${keychainToken}`);
