@@ -68,6 +68,11 @@ export function initDatabase(): void {
   try {
     db.exec(`ALTER TABLE scheduled_tasks ADD COLUMN context_mode TEXT DEFAULT 'isolated'`);
   } catch { /* column already exists */ }
+
+  // Add media_path column if it doesn't exist (migration for image support)
+  try {
+    db.exec(`ALTER TABLE messages ADD COLUMN media_path TEXT`);
+  } catch { /* column already exists */ }
 }
 
 /**
@@ -143,9 +148,9 @@ export function setLastGroupSync(): void {
  * Store a message with full content.
  * Only call this for registered groups where message history is needed.
  */
-export function storeMessage(msgId: string, chatJid: string, sender: string, senderName: string, content: string, timestamp: string, isFromMe: boolean): void {
-  db.prepare(`INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .run(msgId, chatJid, sender, senderName, content, timestamp, isFromMe ? 1 : 0);
+export function storeMessage(msgId: string, chatJid: string, sender: string, senderName: string, content: string, timestamp: string, isFromMe: boolean, mediaPath?: string): void {
+  db.prepare(`INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, media_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(msgId, chatJid, sender, senderName, content, timestamp, isFromMe ? 1 : 0, mediaPath || null);
 }
 
 export function getNewMessages(jids: string[], lastTimestamp: string, botPrefix: string): { messages: NewMessage[]; newTimestamp: string } {
@@ -154,7 +159,7 @@ export function getNewMessages(jids: string[], lastTimestamp: string, botPrefix:
   const placeholders = jids.map(() => '?').join(',');
   // Filter out bot's own messages by checking content prefix (not is_from_me, since user shares the account)
   const sql = `
-    SELECT id, chat_jid, sender, sender_name, content, timestamp
+    SELECT id, chat_jid, sender, sender_name, content, timestamp, media_path
     FROM messages
     WHERE timestamp > ? AND chat_jid IN (${placeholders}) AND content NOT LIKE ?
     ORDER BY timestamp
@@ -173,7 +178,7 @@ export function getNewMessages(jids: string[], lastTimestamp: string, botPrefix:
 export function getMessagesSince(chatJid: string, sinceTimestamp: string, botPrefix: string): NewMessage[] {
   // Filter out bot's own messages by checking content prefix
   const sql = `
-    SELECT id, chat_jid, sender, sender_name, content, timestamp
+    SELECT id, chat_jid, sender, sender_name, content, timestamp, media_path
     FROM messages
     WHERE chat_jid = ? AND timestamp > ? AND content NOT LIKE ?
     ORDER BY timestamp

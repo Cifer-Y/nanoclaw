@@ -11,6 +11,7 @@ import {
   POLL_INTERVAL,
   STORE_DIR,
   DATA_DIR,
+  GROUPS_DIR,
   TRIGGER_PATTERN,
   MAIN_GROUP_FOLDER,
   IPC_POLL_INTERVAL,
@@ -161,7 +162,11 @@ async function processMessage(msg: NewMessage): Promise<void> {
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
-    return `<message sender="${escapeXml(m.sender_name)}" time="${m.timestamp}">${escapeXml(m.content)}</message>`;
+    let body = escapeXml(m.content);
+    if (m.media_path) {
+      body += `\n[Photo: /workspace/group/${m.media_path}]`;
+    }
+    return `<message sender="${escapeXml(m.sender_name)}" time="${m.timestamp}">${body}</message>`;
   });
   const prompt = `<messages>\n${lines.join('\n')}\n</messages>`;
 
@@ -589,7 +594,30 @@ async function connectTelegram(): Promise<void> {
       }
 
       const msgId = message.id?.toString() || `${Date.now()}`;
-      storeMessage(msgId, normalizedChatId, senderId, senderName, text, timestamp, isFromMe);
+
+      // Download photo if present
+      let mediaPath: string | undefined;
+      if (message.photo) {
+        try {
+          const group = registeredGroups[normalizedChatId];
+          const imagesDir = path.join(GROUPS_DIR, group.folder, 'images');
+          fs.mkdirSync(imagesDir, { recursive: true });
+
+          const filename = `msg_${msgId}.jpg`;
+          const filePath = path.join(imagesDir, filename);
+
+          const buffer = await message.downloadMedia({});
+          if (buffer && Buffer.isBuffer(buffer)) {
+            fs.writeFileSync(filePath, buffer);
+            mediaPath = `images/${filename}`;
+            logger.info({ msgId, chatId: normalizedChatId, path: mediaPath }, 'Photo downloaded');
+          }
+        } catch (err) {
+          logger.warn({ msgId, err }, 'Failed to download photo');
+        }
+      }
+
+      storeMessage(msgId, normalizedChatId, senderId, senderName, text, timestamp, isFromMe, mediaPath);
     }
   }, new TelegramNewMessage({}));
 
