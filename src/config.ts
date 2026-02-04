@@ -30,3 +30,10 @@ export const TRIGGER_PATTERN = new RegExp(`^@${escapeRegex(ASSISTANT_NAME)}\\b`,
 // Timezone for scheduled tasks (cron expressions, etc.)
 // Uses system timezone by default
 export const TIMEZONE = process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+// Retention & cleanup
+export const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
+export const RETENTION_CONTAINER_LOGS_DAYS = 7;
+export const RETENTION_TASK_RUN_LOGS_DAYS = 30;
+export const RETENTION_IPC_ERRORS_DAYS = 7;
+export const RETENTION_MESSAGES_DAYS = 90;

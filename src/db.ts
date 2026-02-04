@@ -272,3 +272,19 @@ export function getTaskRunLogs(taskId: string, limit = 10): TaskRunLog[] {
     LIMIT ?
   `).all(taskId, limit) as TaskRunLog[];
 }
+
+// Cleanup functions
+
+export function deleteOldTaskRunLogs(beforeTimestamp: string): number {
+  return db.prepare('DELETE FROM task_run_logs WHERE run_at < ?').run(beforeTimestamp).changes;
+}
+
+export function getExpiredMediaPaths(beforeTimestamp: string): Array<{ chat_jid: string; media_path: string }> {
+  return db.prepare(
+    'SELECT chat_jid, media_path FROM messages WHERE timestamp < ? AND media_path IS NOT NULL'
+  ).all(beforeTimestamp) as Array<{ chat_jid: string; media_path: string }>;
+}
+
+export function deleteOldMessages(beforeTimestamp: string): number {
+  return db.prepare('DELETE FROM messages WHERE timestamp < ?').run(beforeTimestamp).changes;
+}

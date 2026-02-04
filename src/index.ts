@@ -16,12 +16,14 @@ import {
   MAIN_GROUP_FOLDER,
   IPC_POLL_INTERVAL,
   TIMEZONE,
-  TOKEN_REFRESH_INTERVAL_MS
+  TOKEN_REFRESH_INTERVAL_MS,
+  CLEANUP_INTERVAL_MS
 } from './config.js';
 import { RegisteredGroup, Session, NewMessage } from './types.js';
 import { initDatabase, storeMessage, storeChatMetadata, getNewMessages, getMessagesSince, getAllTasks, getTaskById, updateChatName, getAllChats, getLastGroupSync, setLastGroupSync } from './db.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { runContainerAgent, writeTasksSnapshot, writeGroupsSnapshot, AvailableGroup, refreshOAuthToken } from './container-runner.js';
+import { runCleanup } from './cleanup.js';
 import { loadJson, saveJson } from './utils.js';
 
 const GROUP_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -551,6 +553,12 @@ async function connectTelegram(): Promise<void> {
   setInterval(() => {
     refreshOAuthToken().catch(err => logger.error({ err }, 'Periodic OAuth token refresh failed'));
   }, TOKEN_REFRESH_INTERVAL_MS);
+
+  // Periodic cleanup of old logs, images, DB records
+  runCleanup(registeredGroups).catch(err => logger.error({ err }, 'Initial cleanup failed'));
+  setInterval(() => {
+    runCleanup(registeredGroups).catch(err => logger.error({ err }, 'Periodic cleanup failed'));
+  }, CLEANUP_INTERVAL_MS);
 
   startSchedulerLoop({
     sendMessage,
