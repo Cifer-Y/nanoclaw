@@ -34,6 +34,8 @@ const logger = pino({
 });
 
 let client: TelegramClient;
+let botClient: TelegramClient | null = null;
+let botId: string | null = null;
 let lastTimestamp = '';
 let sessions: Session = {};
 let registeredGroups: Record<string, RegisteredGroup> = {};
@@ -41,8 +43,9 @@ let lastAgentTimestamp: Record<string, string> = {};
 
 async function setTyping(chatId: string, isTyping: boolean): Promise<void> {
   try {
-    const peer = await client.getInputEntity(chatId);
-    await client.invoke(
+    const c = botClient || client;
+    const peer = await c.getInputEntity(chatId);
+    await c.invoke(
       new Api.messages.SetTyping({
         peer,
         action: isTyping
@@ -183,10 +186,11 @@ async function processMessage(msg: NewMessage): Promise<void> {
   // Always advance lastAgentTimestamp so failed/timed-out messages don't retry forever
   lastAgentTimestamp[msg.chat_jid] = msg.timestamp;
 
+  const prefix = botClient ? '' : `${ASSISTANT_NAME}: `;
   if (response) {
-    await sendMessage(msg.chat_jid, `${ASSISTANT_NAME}: ${response}`);
+    await sendMessage(msg.chat_jid, `${prefix}${response}`);
   } else {
-    await sendMessage(msg.chat_jid, `${ASSISTANT_NAME}: [处理失败，请再试一次]`);
+    await sendMessage(msg.chat_jid, `${prefix}[处理失败，请再试一次]`);
   }
 }
 
@@ -252,8 +256,12 @@ async function runAgent(group: RegisteredGroup, prompt: string, chatJid: string)
 
 async function sendMessage(chatId: string, text: string): Promise<void> {
   try {
-    await client.sendMessage(chatId, { message: text });
-    logger.info({ chatId, length: text.length }, 'Message sent');
+    if (botClient) {
+      await botClient.sendMessage(chatId, { message: text });
+    } else {
+      await client.sendMessage(chatId, { message: text });
+    }
+    logger.info({ chatId, length: text.length, via: botClient ? 'bot' : 'user' }, 'Message sent');
   } catch (err) {
     logger.error({ chatId, err }, 'Failed to send message');
   }
@@ -294,7 +302,8 @@ function startIpcWatcher(): void {
                 // Authorization: verify this group can send to this chatJid
                 const targetGroup = registeredGroups[data.chatJid];
                 if (isMain || (targetGroup && targetGroup.folder === sourceGroup)) {
-                  await sendMessage(data.chatJid, `${ASSISTANT_NAME}: ${data.text}`);
+                  const ipcPrefix = botClient ? '' : `${ASSISTANT_NAME}: `;
+                  await sendMessage(data.chatJid, `${ipcPrefix}${data.text}`);
                   logger.info({ chatJid: data.chatJid, sourceGroup }, 'IPC message sent');
                 } else {
                   logger.warn({ chatJid: data.chatJid, sourceGroup }, 'Unauthorized IPC message attempt blocked');
@@ -539,7 +548,26 @@ async function connectTelegram(): Promise<void> {
     process.exit(1);
   }
 
-  logger.info('Connected to Telegram');
+  logger.info('Connected to Telegram (userbot)');
+
+  // Connect bot client for sending replies (optional)
+  const botTokenPath = path.join(authDir, 'bot-token.txt');
+  if (fs.existsSync(botTokenPath)) {
+    try {
+      const botToken = fs.readFileSync(botTokenPath, 'utf-8').trim();
+      botClient = new TelegramClient(new StringSession(''), credentials.apiId, credentials.apiHash, {
+        connectionRetries: 5,
+      });
+      await botClient.start({ botAuthToken: botToken });
+      const me = await botClient.getMe();
+      botId = me.id?.toString() || null;
+      logger.info({ botId }, 'Bot client connected');
+    } catch (err) {
+      logger.warn({ err }, 'Failed to connect bot client, falling back to userbot for replies');
+      botClient = null;
+      botId = null;
+    }
+  }
 
   // Sync group metadata on startup (respects 24h cache)
   syncGroupMetadata().catch(err => logger.error({ err }, 'Initial group sync failed'));
@@ -578,6 +606,9 @@ async function connectTelegram(): Promise<void> {
     const timestamp = new Date(message.date * 1000).toISOString();
     const text = message.text || '';
     const isFromMe = message.out || false;
+
+    // Skip messages from our bot to avoid processing our own replies
+    if (botId && message.senderId?.toString() === botId) return;
 
     // Always store chat metadata for group discovery
     storeChatMetadata(normalizedChatId, timestamp);
