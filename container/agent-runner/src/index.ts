@@ -275,7 +275,9 @@ async function main(): Promise<void> {
 
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
+    const errorStack = err instanceof Error ? err.stack : undefined;
     log(`Agent error: ${errorMessage}`);
+    if (errorStack) log(`Stack: ${errorStack}`);
     writeOutput({
       status: 'error',
       result: null,

@@ -356,8 +356,8 @@ export async function runContainerAgent(
 
         if (code !== 0) {
           logLines.push(
-            `=== Stderr (last 500 chars) ===`,
-            stderr.slice(-500),
+            `=== Stderr (last 2000 chars) ===`,
+            stderr.slice(-2000),
             ``
           );
         }
@@ -371,14 +371,14 @@ export async function runContainerAgent(
           group: group.name,
           code,
           duration,
-          stderr: stderr.slice(-500),
+          stderr: stderr.slice(-2000),
           logFile
         }, 'Container exited with error');
 
         resolve({
           status: 'error',
           result: null,
-          error: `Container exited with code ${code}: ${stderr.slice(-200)}`
+          error: `Container exited with code ${code}: ${stderr.slice(-500)}`
         });
         return;
       }
