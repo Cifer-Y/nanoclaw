@@ -21,3 +21,12 @@ logs/
 .vscode/
 
 agents-sdk-docs
+
+# Agent-generated runtime data in groups
+groups/*/conversations/
+groups/*/images/
+groups/**/*.md
+!groups/*/CLAUDE.md
+
+# Auto-generated skills
+.claude/skills/
