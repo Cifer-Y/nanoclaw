@@ -255,15 +255,27 @@ async function runAgent(group: RegisteredGroup, prompt: string, chatJid: string)
 }
 
 async function sendMessage(chatId: string, text: string): Promise<void> {
+  const send = (plain = false) => {
+    const opts = plain
+      ? { message: text, formattingEntities: [] }
+      : { message: text };
+    return botClient ? botClient.sendMessage(chatId, opts) : client.sendMessage(chatId, opts);
+  };
   try {
-    if (botClient) {
-      await botClient.sendMessage(chatId, { message: text });
-    } else {
-      await client.sendMessage(chatId, { message: text });
-    }
+    await send();
     logger.info({ chatId, length: text.length, via: botClient ? 'bot' : 'user' }, 'Message sent');
-  } catch (err) {
-    logger.error({ chatId, err }, 'Failed to send message');
+  } catch (err: any) {
+    if (err?.errorMessage === 'ENTITY_BOUNDS_INVALID' || err?.message?.includes('ENTITY_BOUNDS_INVALID')) {
+      logger.warn({ chatId }, 'Markdown parse failed, retrying as plain text');
+      try {
+        await send(true);
+        logger.info({ chatId, length: text.length, via: botClient ? 'bot' : 'user' }, 'Message sent (plain text fallback)');
+      } catch (err2) {
+        logger.error({ chatId, err: err2 }, 'Failed to send message (plain text fallback)');
+      }
+    } else {
+      logger.error({ chatId, err }, 'Failed to send message');
+    }
   }
 }
 
@@ -536,7 +548,7 @@ async function connectTelegram(): Promise<void> {
   const session = new StringSession(sessionString);
 
   client = new TelegramClient(session, credentials.apiId, credentials.apiHash, {
-    connectionRetries: 5,
+    connectionRetries: Infinity,
   });
 
   await client.connect();

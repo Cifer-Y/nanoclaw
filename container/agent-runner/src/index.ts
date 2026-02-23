@@ -231,14 +231,12 @@ async function main(): Promise<void> {
     prompt = `[SCHEDULED TASK - You are running automatically, not in response to a user message. Use mcp__nanoclaw__send_message if needed to communicate with the user.]\n\n${input.prompt}`;
   }
 
-  try {
-    log('Starting agent...');
-
+  const runAgent = async (sessionId?: string) => {
     for await (const message of query({
       prompt,
       options: {
         cwd: '/workspace/group',
-        resume: input.sessionId,
+        resume: sessionId,
         allowedTools: [
           'Bash',
           'Read', 'Write', 'Edit', 'Glob', 'Grep',
@@ -265,25 +263,36 @@ async function main(): Promise<void> {
         result = message.result as string;
       }
     }
+  };
 
+  try {
+    log('Starting agent...');
+    await runAgent(input.sessionId);
     log('Agent completed successfully');
-    writeOutput({
-      status: 'success',
-      result,
-      newSessionId
-    });
+    writeOutput({ status: 'success', result, newSessionId });
 
   } catch (err) {
+    // If we had a session ID, the failure might be a stale session — retry fresh
+    if (input.sessionId) {
+      log(`Agent failed with session ${input.sessionId}, retrying without session...`);
+      try {
+        result = null;
+        newSessionId = undefined;
+        await runAgent(undefined);
+        log('Agent completed successfully (fresh session)');
+        writeOutput({ status: 'success', result, newSessionId });
+        return;
+      } catch (retryErr) {
+        const retryMessage = retryErr instanceof Error ? retryErr.message : String(retryErr);
+        log(`Agent error on fresh session retry: ${retryMessage}`);
+      }
+    }
+
     const errorMessage = err instanceof Error ? err.message : String(err);
     const errorStack = err instanceof Error ? err.stack : undefined;
     log(`Agent error: ${errorMessage}`);
     if (errorStack) log(`Stack: ${errorStack}`);
-    writeOutput({
-      status: 'error',
-      result: null,
-      newSessionId,
-      error: errorMessage
-    });
+    writeOutput({ status: 'error', result: null, newSessionId, error: errorMessage });
     process.exit(1);
   }
 }
