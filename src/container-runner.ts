@@ -144,6 +144,16 @@ function buildVolumeMounts(group: RegisteredGroup, isMain: boolean): VolumeMount
     readonly: false
   });
 
+  // Shared skills directory (read-only) — makes project-level skills available to all groups
+  const skillsDir = path.join(projectRoot, '.claude', 'skills');
+  if (fs.existsSync(skillsDir)) {
+    mounts.push({
+      hostPath: skillsDir,
+      containerPath: '/home/node/.claude/skills',
+      readonly: true
+    });
+  }
+
   // Per-group IPC namespace: each group gets its own IPC directory
   // This prevents cross-group privilege escalation via IPC
   const groupIpcDir = path.join(DATA_DIR, 'ipc', group.folder);
